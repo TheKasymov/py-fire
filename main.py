@@ -21,9 +21,10 @@ from db.models import RoutingHistory, RoutedTicketModel # Убедись, что
 from services.parser import CSVParser
 from services.pipeline import TicketPipeline
 from ai_service.nlp_module import generate_chart_data
-
+from fastapi import Query
 # Твои Pydantic схемы (убедись, что они есть в schemas/models.py)
 from schemas.models import TicketCreate, RoutedTicket, AIAnalysisResult
+from db.models import RoutingHistory
 
 # --- Инициализация ИИ (Gemini) ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "твой_ключ_здесь_если_нет_в_env")
@@ -321,6 +322,93 @@ async def create_and_route_ticket(ticket: TicketCreate, db: Session = Depends(ge
         ai_analysis=ai_data,
         routing_reason=new_record.routing_reason
     )
+
+# --- 1. GET: Список всех распределенных тикетов (с пагинацией) ---
+@app.get("/api/v1/routing-history", response_model=List[RoutedTicket], tags=["Routing History"])
+async def list_routing_history(
+    skip: int = Query(0, description="Сколько записей пропустить"), 
+    limit: int = Query(50, description="Сколько записей вернуть"), 
+    db: Session = Depends(get_db)
+):
+    """
+    Получить список всех распределенных обращений (для таблицы аудита).
+    """
+    records = db.query(RoutingHistory).order_by(RoutingHistory.created_at.desc()).offset(skip).limit(limit).all()
+    
+    result_list = []
+    for record in records:
+        ai_data = AIAnalysisResult(
+            ticket_type=record.ai_ticket_type,
+            sentiment=record.ai_sentiment,
+            complexity_score=record.ai_complexity_score,
+            is_critical=True if record.ai_complexity_score >= 50 else False
+        )
+        
+        result_list.append(RoutedTicket(
+            ticket_guid=record.ticket_guid,
+            manager_fio=record.manager_fio,
+            assigned_office=record.assigned_office,
+            ai_analysis=ai_data,
+            sla_deadline=record.sla_deadline or "Не задан",
+            routing_reason=record.routing_reason or "Не указана"
+        ))
+        
+    return result_list
+
+
+# --- 2. GET: Конкретный тикет по ID ---
+@app.get("/api/v1/routing-history/{ticket_guid}", response_model=RoutedTicket, tags=["Routing History"])
+async def get_routing_result(ticket_guid: str, db: Session = Depends(get_db)):
+    """
+    Получить детали конкретного обращения по его GUID.
+    """
+    history_record = db.query(RoutingHistory).filter(RoutingHistory.ticket_guid == ticket_guid).first()
+    
+    if not history_record:
+        raise HTTPException(status_code=404, detail=f"Тикет с ID {ticket_guid} не найден в истории маршрутизации")
+
+    ai_data = AIAnalysisResult(
+        ticket_type=history_record.ai_ticket_type,
+        sentiment=history_record.ai_sentiment,
+        complexity_score=history_record.ai_complexity_score,
+        is_critical=True if history_record.ai_complexity_score >= 50 else False
+    )
+
+    return RoutedTicket(
+        ticket_guid=history_record.ticket_guid,
+        manager_fio=history_record.manager_fio,
+        assigned_office=history_record.assigned_office,
+        ai_analysis=ai_data,
+        sla_deadline=history_record.sla_deadline or "Не задан",
+        routing_reason=history_record.routing_reason or "Не указана"
+    )
+
+@app.get("/api/v1/managers/workload", tags=["Managers Audit"])
+async def get_managers_workload(db: Session = Depends(get_db)):
+    """
+    Получить список всех менеджеров с их текущими баллами выгорания.
+    (Доступно после создания таблицы Managers в БД)
+    """
+    managers = db.query(ManagerDB).all()
+    
+    results = []
+    for m in managers:
+        status = "В норме"
+        if m.current_score >= 20:
+            status = "⚠️ Перегружен (не получает сложные тикеты)"
+            
+        results.append({
+            "id": m.id,
+            "fio": m.fio,
+            "role": m.position,
+            "office": m.office_name,
+            "current_score": m.current_score,
+            "burnout_status": status
+        })
+        
+    # Сортируем от самых перегруженных к самым свободным
+    results.sort(key=lambda x: x["current_score"], reverse=True)
+    return results
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
