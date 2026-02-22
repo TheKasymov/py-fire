@@ -203,13 +203,13 @@ async def analyze_bug_screenshot(file: UploadFile = File(...)):
 # ==========================================
 # ЭНДПОИНТЫ: ИСТОРИЯ И ТЕЛЕГРАМ-БОТ
 # ==========================================
+# Фрагмент для обновления в main.py (в обоих GET-эндпоинтах):
+
 @app.get("/api/v1/routing-history/{ticket_guid}", response_model=RoutedTicket)
 async def get_routing_result(ticket_guid: str, db: Session = Depends(get_db)):
-    """Получить итоговый результат маршрутизации конкретного тикета"""
     history_record = db.query(RoutingHistory).filter(RoutingHistory.ticket_guid == ticket_guid).first()
-    
     if not history_record:
-        raise HTTPException(status_code=404, detail="История маршрутизации для данного тикета не найдена")
+        raise HTTPException(status_code=404, detail="Не найдено")
 
     ai_data = AIAnalysisResult(
         ticket_type=history_record.ai_ticket_type,
@@ -223,13 +223,12 @@ async def get_routing_result(ticket_guid: str, db: Session = Depends(get_db)):
         manager_fio=history_record.manager_fio,
         assigned_office=history_record.assigned_office,
         ai_analysis=ai_data,
+        sla_deadline=history_record.sla_deadline, # <--- ДОБАВИТЬ ЭТУ СТРОКУ
         routing_reason=history_record.routing_reason
     )
 
-
 @app.get("/api/v1/routing-history", response_model=List[RoutedTicket])
 async def list_routing_history(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    """Получить список последних маршрутизаций"""
     records = db.query(RoutingHistory).order_by(RoutingHistory.created_at.desc()).offset(skip).limit(limit).all()
     
     result_list = []
@@ -246,6 +245,7 @@ async def list_routing_history(skip: int = 0, limit: int = 10, db: Session = Dep
             manager_fio=record.manager_fio,
             assigned_office=record.assigned_office,
             ai_analysis=ai_data,
+            sla_deadline=record.sla_deadline, # <--- ДОБАВИТЬ ЭТУ СТРОКУ
             routing_reason=record.routing_reason
         ))
         

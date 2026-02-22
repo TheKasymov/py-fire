@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
+from sqlalchemy import Column, String, Integer, DateTime, Boolean, Text
 from datetime import datetime
 from db.database import Base
 
@@ -6,19 +6,17 @@ class RoutingHistory(Base):
     __tablename__ = "routing_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    # --- Данные Лида (Клиента) ---
     ticket_guid = Column(String, index=True)
-    city = Column(String)
-    segment = Column(String)
+    manager_fio = Column(String)
+    assigned_office = Column(String)
     
-    # --- Данные Аналитики ИИ ---
+    # Данные AI
     ai_ticket_type = Column(String)
     ai_sentiment = Column(String)
     ai_complexity_score = Column(Integer)
     
-    # --- Данные Назначенного Менеджера ---
-    manager_fio = Column(String, index=True)
-    assigned_office = Column(String)
-    routing_reason = Column(String)
+    # Новые поля по ТЗ
+    sla_deadline = Column(String)  # <--- НОВОЕ ПОЛЕ ДЛЯ SLA
+    routing_reason = Column(Text)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)

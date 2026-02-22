@@ -43,38 +43,32 @@ with tab1:
                         results = response.json()
                         st.success(f"Успешно обработано {len(results)} обращений!")
                         
-                        # Преобразуем JSON в красивую таблицу
+                        # Преобразуем JSON в красивую таблицу для АУДИТА
                         table_data = []
                         for r in results:
-                            with st.expander(f"📋 Детали тикета {r['ticket_id'][:8]}..."):
-                                portrait = r.get("psychological_portrait", {})
-                                
-                                st.subheader("🧠 Психологический портрет клиента")
-                                col_p1, col_p2 = st.columns(2)
-                                
-                                with col_p1:
-                                    st.info(f"**Тип личности:** {portrait.get('profile_type')}")
-                                    st.write(f"**Рекомендация:** {portrait.get('communication_recommendation')}")
-                                
-                                with col_p2:
-                                    metrics = portrait.get("metrics", {})
-                                    st.write(f"📈 Повторов слов: {metrics.get('word_repetition_count')}")
-                                    st.write(f"❗ Эмоциональный фон: {'Высокий' if metrics.get('emotional_punctuation', 0) > 2 else 'Спокойный'}")
+                            # Теперь ИИ-аналитика лежит в объекте ai_analysis (по нашей новой схеме)
+                            ai_analysis = r.get("ai_analysis", {})
                             
-                            analysis = r.get("analysis", {})
-                            geo = r.get("geo") or {}
                             table_data.append({
-                                "ID Обращения": r.get("ticket_id", "N/A")[:8] + "...",
-                                "Тип": analysis.get("appeal_type", "-"),
-                                "Тональность": analysis.get("sentiment", "-"),
-                                "Приоритет": analysis.get("priority", "-"),
-                                "Город (Гео)": geo.get("nearest_office", {}).get("name", "Не определён"),
-                                "Назначенный Менеджер": r.get("assigned_manager", "-")
+                                "ID": r.get("ticket_guid", "N/A")[:8],
+                                "Тип проблемы": ai_analysis.get("ticket_type", "-"),
+                                "Тональность": ai_analysis.get("sentiment", "-"),
+                                "Сложность (Баллы)": ai_analysis.get("complexity_score", 0),
+                                "SLA (Время ответа)": r.get("sla_deadline", "-"),
+                                "Назначен": r.get("manager_fio", "-"),
+                                "Офис": r.get("assigned_office", "-"),
+                                "Причина маршрутизации (Аудит)": r.get("routing_reason", "-")
                             })
                             
                         df = pd.DataFrame(table_data)
+                        
+                        # Выводим таблицу
                         st.dataframe(df, use_container_width=True)
                         
+                        # Добавим визуальный индикатор для критичных тикетов (Опционально)
+                        critical_tickets = [t for t in results if t.get("ai_analysis", {}).get("is_critical")]
+                        if critical_tickets:
+                            st.warning(f"⚠️ Внимание! Обнаружено {len(critical_tickets)} критичных обращений (Эскалация).")
                     else:
                         st.error(f"Ошибка API: {response.text}")
                 except Exception as e:

@@ -61,9 +61,11 @@ class CSVParser:
         raw_data = CSVParser._read_csv(file)
         managers = []
         for row in raw_data:
-            # Обрабатываем навыки (строка "VIP, ENG" -> список)
+            # Обрабатываем навыки, чтобы не было лишних пробелов: "VIP, ENG" -> ["VIP", "ENG"]
             skills_str = row.get("Навыки", "")
             skills = [s.strip() for s in skills_str.split(",")] if skills_str else []
+            
+            # Читаем стартовую нагрузку (превратим ее в баллы в пайплайне)
             load_raw = row.get("Количество обращений в работе", "0")
             try:
                 load = int(load_raw)
@@ -75,7 +77,7 @@ class CSVParser:
                 "role": row.get("Должность"),
                 "office": row.get("Офис"),
                 "skills": skills,
-                "load": load
+                "load": load 
             })
         return managers
 
@@ -105,7 +107,7 @@ class CSVParser:
                 "street": street,
                 "house": house,
                 "address": ", ".join(
-                    [part for part in [country, region, city, street, house] if part]
+                    [part for part in [row.get("Страна", ""), row.get("Область", ""), row.get("Населённый пункт", ""), row.get("Улица", ""), row.get("Дом", "")] if part]
                 ),
                 "manager_id": None # Будет заполнено алгоритмом
             })
