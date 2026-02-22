@@ -13,6 +13,33 @@ import io
 import google.generativeai as genai
 from fastapi import FastAPI, UploadFile, File, HTTPException
 import PIL.Image
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
+from typing import List, Dict
+from db.models import RoutingHistory
+from schemas.models import RoutedTicket, AIAnalysisResult
+
+
+class ModelInfo(BaseModel):
+    name: str
+    version: str
+    description: Optional[str]
+    supported_methods: List[str]
+
+class SystemModelsResponse(BaseModel):
+    remote_models_gemini: List[ModelInfo]
+    local_models_ollama: List[Dict]
+    status: str
+
+class BugAnalysisResponse(BaseModel):
+    report_id: str
+    status: str
+    timestamp: datetime
+    file_info: dict  # Путь к файлу, имя, размер
+    analysis: Optional[dict] = None  # Распарсенный ответ от Gemini
+    raw_text: Optional[str] = None   # Полный текст ответа на случай ошибки парсинга
+    error_details: Optional[str] = None
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
@@ -104,3 +131,117 @@ async def analyze_bug_screenshot(file: UploadFile = File(...)):
                 "saved_file_path": file_path
             }
         )
+
+@app.post("/api/v1/bugs/analyze", response_model=BugAnalysisResponse)
+async def analyze_bug_screenshot(file: UploadFile = File(...)):
+    report_id = str(uuid.uuid4())
+    timestamp = datetime.now()
+    
+    # --- 1. Сохранение файла (всегда) ---
+    file_ext = os.path.splitext(file.filename)[1]
+    filename = f"{report_id}{file_ext}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    
+    contents = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(contents)
+    
+    file_info = {
+        "filename": filename,
+        "path": file_path,
+        "size": len(contents)
+    }
+
+    # --- 2. Попытка анализа через Gemini ---
+    try:
+        image = PIL.Image.open(io.BytesIO(contents))
+        
+        # Просим Gemini вернуть ответ в формате JSON-подобной структуры
+        prompt = """
+        Проанализируй скриншот. Выдай ответ строго в формате:
+        Локация: [где ошибка]
+        Суть: [что случилось]
+        Критичность: [Low/Medium/High]
+        """
+        
+        response = model.generate_content([prompt, image])
+        analysis_text = response.text
+
+        # Пример простой логики парсинга (можно усложнить)
+        return BugAnalysisResponse(
+            report_id=report_id,
+            status="success",
+            timestamp=timestamp,
+            file_info=file_info,
+            raw_text=analysis_text,
+            analysis={
+                "summary": analysis_text.split('\n')[0], # Пример грубого парсинга
+                "full_report": analysis_text
+            }
+        )
+
+    except Exception as e:
+        # Если Gemini упал, файл всё равно остается сохраненным
+        return BugAnalysisResponse(
+            report_id=report_id,
+            status="partial_error",
+            timestamp=timestamp,
+            file_info=file_info,
+            error_details=str(e)
+        )
+
+@app.get("/api/v1/routing-history/{ticket_guid}", response_model=RoutedTicket)
+async def get_routing_result(ticket_guid: str, db: Session = Depends(get_db)):
+    """
+    Получить итоговый результат маршрутизации конкретного тикета
+    """
+    # 1. Ищем запись в вашей БД (RoutingHistory)
+    history_record = db.query(RoutingHistory).filter(RoutingHistory.ticket_guid == ticket_guid).first()
+    
+    if not history_record:
+        raise HTTPException(status_code=404, detail="История маршрутизации для данного тикета не найдена")
+
+    # 2. Собираем вложенный объект ИИ аналитики из плоских колонок БД
+    ai_data = AIAnalysisResult(
+        ticket_type=history_record.ai_ticket_type,
+        sentiment=history_record.ai_sentiment,
+        complexity_score=history_record.ai_complexity_score,
+        # Примечание: is_critical нет в вашей БД, поэтому вычисляем на лету
+        # или ставим False по умолчанию
+        is_critical=True if history_record.ai_complexity_score >= 50 else False
+    )
+
+    # 3. Возвращаем итоговую схему RoutedTicket
+    return RoutedTicket(
+        ticket_guid=history_record.ticket_guid,
+        manager_fio=history_record.manager_fio,
+        assigned_office=history_record.assigned_office,
+        ai_analysis=ai_data,
+        routing_reason=history_record.routing_reason
+    )
+
+@app.get("/api/v1/routing-history", response_model=List[RoutedTicket])
+async def list_routing_history(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+    """
+    Получить список последних маршрутизаций
+    """
+    records = db.query(RoutingHistory).order_by(RoutingHistory.created_at.desc()).offset(skip).limit(limit).all()
+    
+    result_list = []
+    for record in records:
+        ai_data = AIAnalysisResult(
+            ticket_type=record.ai_ticket_type,
+            sentiment=record.ai_sentiment,
+            complexity_score=record.ai_complexity_score,
+            is_critical=True if record.ai_complexity_score >= 50 else False
+        )
+        
+        result_list.append(RoutedTicket(
+            ticket_guid=record.ticket_guid,
+            manager_fio=record.manager_fio,
+            assigned_office=record.assigned_office,
+            ai_analysis=ai_data,
+            routing_reason=record.routing_reason
+        ))
+        
+    return result_list
