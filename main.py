@@ -1,26 +1,47 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
-from sqlalchemy.orm import Session
-from typing import List
-import uvicorn
-
-from services.parser import CSVParser
-from services.pipeline import TicketPipeline
-from schemas.models import RoutedTicket
-from db.database import engine, Base, get_db
-from db.repository import RoutingRepository
 import os
 import io
-import google.generativeai as genai
-from fastapi import FastAPI, UploadFile, File, HTTPException
-import PIL.Image
-from pydantic import BaseModel
-from typing import Optional
+import uuid
 from datetime import datetime
-from typing import List, Dict
-from db.models import RoutingHistory
+from typing import List, Dict, Optional
+
+import uvicorn
+import PIL.Image
+import google.generativeai as genai
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+
+# Импорты твоих локальных модулей
+from db.database import engine, Base, get_db
+from db.repository import RoutingRepository
+from db.models import RoutingHistory, RoutedTicketModel # Убедись, что RoutedTicketModel импортирован для AI Assistant
+from services.parser import CSVParser
+from services.pipeline import TicketPipeline
+from ai_service.nlp_module import generate_chart_data
+
+# Твои Pydantic схемы (убедись, что они есть в schemas/models.py)
 from schemas.models import TicketCreate, RoutedTicket, AIAnalysisResult
 
+# --- Инициализация ИИ (Gemini) ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "твой_ключ_здесь_если_нет_в_env")
+genai.configure(api_key=GEMINI_API_KEY)
+MODEL_NAME = 'gemini-3-flash-preview' 
+model = genai.GenerativeModel(MODEL_NAME)
 
+# --- Инициализация БД ---
+# Магия хакатона: автоматическое создание всех таблиц в PostgreSQL при запуске!
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="F.I.R.E. API", version="1.0.0")
+
+# Создаем папку для скриншотов
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+# --- СХЕМЫ ДАННЫХ ДЛЯ ЭНДПОИНТОВ ---
 class ModelInfo(BaseModel):
     name: str
     version: str
@@ -41,30 +62,35 @@ class BugAnalysisResponse(BaseModel):
     raw_text: Optional[str] = None   # Полный текст ответа на случай ошибки парсинга
     error_details: Optional[str] = None
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
+class ChartRequest(BaseModel):
+    query: str
 
-# Магия хакатона: автоматическое создание всех таблиц в PostgreSQL при запуске!
-Base.metadata.create_all(bind=engine)
 
-MODEL_NAME = 'gemini-3-flash-preview' 
-model = genai.GenerativeModel(MODEL_NAME)
-app = FastAPI(title="F.I.R.E. API")
+# ==========================================
+# ЭНДПОИНТЫ: БАЗОВЫЕ ПРОВЕРКИ
+# ==========================================
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "service": "fire-backend"}
 
-@app.post("/api/v1/route-tickets", response_model=List[RoutedTicket])
+
+# ==========================================
+# ЭНДПОИНТЫ: МАССОВАЯ МАРШРУТИЗАЦИЯ (CSV)
+# ==========================================
+@app.post("/api/v1/route-tickets")
 async def route_tickets_endpoint(
     tickets_file: UploadFile = File(...),
     managers_file: UploadFile = File(...),
     units_file: UploadFile = File(...),
-    db: Session = Depends(get_db)  # Получаем сессию БД
+    db: Session = Depends(get_db)
 ):
     try:
-        # 1. Парсим
+        # 1. Парсим CSV
         offices = CSVParser.parse_business_units(units_file.file)
         managers = CSVParser.parse_managers(managers_file.file)
         tickets = CSVParser.parse_tickets(tickets_file.file)
         
-        # 2. Балансируем
+        # 2. Балансируем (с ИИ-анализом и психологическим портретом)
         results = await TicketPipeline.process_all(tickets, managers, offices)
         
         # 3. Сохраняем в PostgreSQL
@@ -75,65 +101,47 @@ async def route_tickets_endpoint(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка: {str(e)}")
 
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# ==========================================
+# ЭНДПОИНТЫ: STAR TASK (AI-ASSISTANT)
+# ==========================================
+@app.post("/api/v1/ai-assistant/chart")
+async def ai_chart_endpoint(
+    request: ChartRequest, 
+    db: Session = Depends(get_db)
+):
+    try:
+        # Достаем исторические данные для построения графиков
+        db_records = db.query(RoutingHistory).all()
+        
+        if not db_records:
+            return {"error": "База данных пуста. Сначала распределите тикеты.", "chart_type": "none"}
 
-@app.post("/api/v1/bugs/analyze")
+        appeals_data = []
+        for record in db_records:
+            appeals_data.append({
+                "appeal_type": getattr(record, "ai_ticket_type", "Неизвестно"),
+                "sentiment": getattr(record, "ai_sentiment", "Нейтральный"),
+                "priority": getattr(record, "ai_complexity_score", 5),
+                "language": "RU", # В RoutingHistory нет языка, ставим по умолчанию
+                "geo": {"nearest_office": {"name": getattr(record, "assigned_office", "Не определён")}}
+            })
+            
+        chart_json = await generate_chart_data(request.query, appeals_data)
+        return chart_json
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка генерации графика: {str(e)}")
+
+
+# ==========================================
+# ЭНДПОИНТЫ: АНАЛИЗ СКРИНШОТОВ (GEMINI)
+# ==========================================
+@app.post("/api/v1/bugs/analyze", response_model=BugAnalysisResponse)
 async def analyze_bug_screenshot(file: UploadFile = File(...)):
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Файл должен быть изображением")
 
-    # --- ШАГ 1: СОХРАНЯЕМ ФАЙЛ В ЛЮБОМ СЛУЧАЕ ---
-    file_extension = os.path.splitext(file.filename)[1]
-    unique_filename = f"{uuid.uuid4()}{file_extension}"
-    file_path = os.path.join(UPLOAD_DIR, unique_filename)
-
-    try:
-        contents = await file.read()
-        with open(file_path, "wb") as f:
-            f.write(contents)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Не удалось сохранить файл: {str(e)}")
-
-    # --- ШАГ 2: ОБРАБОТКА GEMINI ---
-    try:
-        # Открываем изображение для нейросети
-        image = PIL.Image.open(io.BytesIO(contents))
-        
-        prompt = """
-        Ты опытный QA-инженер. Проанализируй скриншот ошибки.
-        Сформируй отчет для менеджера:
-        **Где обнаружено:** ...
-        **Суть проблемы:** ...
-        **Влияние на пользователя:** ...
-        """
-
-        response = model.generate_content([prompt, image])
-        
-        return {
-            "status": "success",
-            "saved_file": file_path,
-            "pm_description": response.text
-        }
-
-    except Exception as e:
-        # Если Gemini не сработал, мы всё равно возвращаем 200 или 500, 
-        # но сообщаем, что файл-то мы сохранили!
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "partial_error",
-                "message": f"Файл сохранен как {unique_filename}, но Gemini выдал ошибку.",
-                "details": str(e),
-                "saved_file_path": file_path
-            }
-        )
-
-@app.post("/api/v1/bugs/analyze", response_model=BugAnalysisResponse)
-async def analyze_bug_screenshot(file: UploadFile = File(...)):
     report_id = str(uuid.uuid4())
     timestamp = datetime.now()
     
@@ -156,9 +164,8 @@ async def analyze_bug_screenshot(file: UploadFile = File(...)):
     try:
         image = PIL.Image.open(io.BytesIO(contents))
         
-        # Просим Gemini вернуть ответ в формате JSON-подобной структуры
         prompt = """
-        Проанализируй скриншот. Выдай ответ строго в формате:
+        Проанализируй скриншот ошибки. Выдай ответ строго в формате:
         Локация: [где ошибка]
         Суть: [что случилось]
         Критичность: [Low/Medium/High]
@@ -167,7 +174,6 @@ async def analyze_bug_screenshot(file: UploadFile = File(...)):
         response = model.generate_content([prompt, image])
         analysis_text = response.text
 
-        # Пример простой логики парсинга (можно усложнить)
         return BugAnalysisResponse(
             report_id=report_id,
             status="success",
@@ -175,43 +181,43 @@ async def analyze_bug_screenshot(file: UploadFile = File(...)):
             file_info=file_info,
             raw_text=analysis_text,
             analysis={
-                "summary": analysis_text.split('\n')[0], # Пример грубого парсинга
+                "summary": analysis_text.split('\n')[0] if '\n' in analysis_text else analysis_text,
                 "full_report": analysis_text
             }
         )
 
     except Exception as e:
         # Если Gemini упал, файл всё равно остается сохраненным
-        return BugAnalysisResponse(
-            report_id=report_id,
-            status="partial_error",
-            timestamp=timestamp,
-            file_info=file_info,
-            error_details=str(e)
+        return JSONResponse(
+            status_code=500,
+            content=BugAnalysisResponse(
+                report_id=report_id,
+                status="partial_error",
+                timestamp=timestamp,
+                file_info=file_info,
+                error_details=f"Файл сохранен, но Gemini выдал ошибку: {str(e)}"
+            ).dict()
         )
 
+
+# ==========================================
+# ЭНДПОИНТЫ: ИСТОРИЯ И ТЕЛЕГРАМ-БОТ
+# ==========================================
 @app.get("/api/v1/routing-history/{ticket_guid}", response_model=RoutedTicket)
 async def get_routing_result(ticket_guid: str, db: Session = Depends(get_db)):
-    """
-    Получить итоговый результат маршрутизации конкретного тикета
-    """
-    # 1. Ищем запись в вашей БД (RoutingHistory)
+    """Получить итоговый результат маршрутизации конкретного тикета"""
     history_record = db.query(RoutingHistory).filter(RoutingHistory.ticket_guid == ticket_guid).first()
     
     if not history_record:
         raise HTTPException(status_code=404, detail="История маршрутизации для данного тикета не найдена")
 
-    # 2. Собираем вложенный объект ИИ аналитики из плоских колонок БД
     ai_data = AIAnalysisResult(
         ticket_type=history_record.ai_ticket_type,
         sentiment=history_record.ai_sentiment,
         complexity_score=history_record.ai_complexity_score,
-        # Примечание: is_critical нет в вашей БД, поэтому вычисляем на лету
-        # или ставим False по умолчанию
         is_critical=True if history_record.ai_complexity_score >= 50 else False
     )
 
-    # 3. Возвращаем итоговую схему RoutedTicket
     return RoutedTicket(
         ticket_guid=history_record.ticket_guid,
         manager_fio=history_record.manager_fio,
@@ -220,11 +226,10 @@ async def get_routing_result(ticket_guid: str, db: Session = Depends(get_db)):
         routing_reason=history_record.routing_reason
     )
 
+
 @app.get("/api/v1/routing-history", response_model=List[RoutedTicket])
 async def list_routing_history(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    """
-    Получить список последних маршрутизаций
-    """
+    """Получить список последних маршрутизаций"""
     records = db.query(RoutingHistory).order_by(RoutingHistory.created_at.desc()).offset(skip).limit(limit).all()
     
     result_list = []
@@ -246,19 +251,13 @@ async def list_routing_history(skip: int = 0, limit: int = 10, db: Session = Dep
         
     return result_list
 
+
 @app.post("/api/v1/tickets", response_model=RoutedTicket)
 async def create_and_route_ticket(ticket: TicketCreate, db: Session = Depends(get_db)):
     """
     Принимает новый тикет (от Telegram бота или сайта), 
-    анализирует через ИИ, назначает менеджера и сохраняет в БД.
+    анализирует, назначает менеджера и сохраняет в БД.
     """
-    
-    # ---------------------------------------------------------
-    # ШАГ 1: АНАЛИЗ ИИ (AI Module)
-    # ---------------------------------------------------------
-    # Здесь вызовите вашу реальную нейросеть (Gemini, Llama или вашу appeals_nb_model)
-    # Для примера я напишу простую логику-заглушку:
-    
     is_complaint = "жалоба" in ticket.description.lower()
     
     ai_data = AIAnalysisResult(
@@ -268,29 +267,17 @@ async def create_and_route_ticket(ticket: TicketCreate, db: Session = Depends(ge
         is_critical=True if (ticket.segment == "VIP" and is_complaint) else False
     )
 
-    # ---------------------------------------------------------
-    # ШАГ 2: МАРШРУТИЗАЦИЯ (Geo Balancer)
-    # ---------------------------------------------------------
-    # Здесь логика подбора менеджера (проверка скиллов, города, загрузки)
-    
     assigned_manager = "Иванов Иван (VIP-отдел)" if ai_data.is_critical else "Петров Петр"
     assigned_office = "Офис Астана" if ticket.city.lower() == "астана" else "Офис Алматы"
     routing_reason = f"Назначен по сегменту {ticket.segment} и сложности {ai_data.complexity_score}"
 
-    # ---------------------------------------------------------
-    # ШАГ 3: СОХРАНЕНИЕ В БАЗУ ДАННЫХ (PostgreSQL)
-    # ---------------------------------------------------------
     new_record = RoutingHistory(
         ticket_guid=ticket.guid,
         city=ticket.city,
         segment=ticket.segment,
-        
-        # Данные от ИИ
         ai_ticket_type=ai_data.ticket_type,
         ai_sentiment=ai_data.sentiment,
         ai_complexity_score=ai_data.complexity_score,
-        
-        # Данные маршрутизации
         manager_fio=assigned_manager,
         assigned_office=assigned_office,
         routing_reason=routing_reason
@@ -298,12 +285,8 @@ async def create_and_route_ticket(ticket: TicketCreate, db: Session = Depends(ge
     
     db.add(new_record)
     db.commit()
-    db.refresh(new_record) # Получаем обновленные данные (с ID и датой)
+    db.refresh(new_record) 
 
-    # ---------------------------------------------------------
-    # ШАГ 4: ОТВЕТ ДЛЯ TELEGRAM БОТА
-    # ---------------------------------------------------------
-    # Возвращаем данные строго по схеме RoutedTicket
     return RoutedTicket(
         ticket_guid=new_record.ticket_guid,
         manager_fio=new_record.manager_fio,
@@ -311,3 +294,6 @@ async def create_and_route_ticket(ticket: TicketCreate, db: Session = Depends(ge
         ai_analysis=ai_data,
         routing_reason=new_record.routing_reason
     )
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

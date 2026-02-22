@@ -19,7 +19,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Optional, cast
 import osmnx as ox  # <--- ДОБАВЬ ЭТУ СТРОКУ
-
+from collections import Counter
+import re
 
 
 import httpx
@@ -2373,3 +2374,43 @@ async def _llm_chart_interpretation(query: str, data: list, model: str) -> dict:
 _model_load_status = load_trained_model()
 if _model_load_status.get("available"):
     logger.info("Loaded trained CSV model from %s", _model_load_status.get("path"))
+
+
+def generate_psychological_portrait(text: str, sentiment: str, priority: int) -> dict:
+    """Генерирует психологический профиль клиента на основе текста обращения."""
+    words = re.findall(r'\w+', text.lower())
+    total_words = len(words)
+    
+    # Считаем повторы слов (от 3 букв и длиннее)
+    word_counts = Counter([w for w in words if len(w) > 3])
+    repetitions = {word: count for word, count in word_counts.items() if count > 1}
+    max_repeats = max(repetitions.values()) if repetitions else 0
+    
+    # Анализ знаков препинания (восклицания/вопросы)
+    exclamations = text.count('!')
+    questions = text.count('?')
+    
+    # Определяем психотип
+    if priority >= 8 or exclamations > 3:
+        profile_type = "Взрывной/Эмоциональный"
+        style = "Требует немедленного признания важности проблемы. Избегайте сухих скриптов."
+    elif max_repeats > 2:
+        profile_type = "Настойчивый/Акцентированный"
+        style = "Зациклен на конкретной детали. Важно четко ответить на повторяющиеся вопросы."
+    elif sentiment == "Позитивный":
+        profile_type = "Лояльный/Конструктивный"
+        style = "Расположен к диалогу. Можно предложить дополнительные услуги или кросс-продажи."
+    else:
+        profile_type = "Деловой/Нейтральный"
+        style = "Ценит время и четкость. Минимум вежливости, максимум фактов."
+
+    return {
+        "profile_type": profile_type,
+        "communication_recommendation": style,
+        "metrics": {
+            "word_repetition_count": len(repetitions),
+            "max_repeats_of_single_word": max_repeats,
+            "emotional_punctuation": exclamations + questions,
+            "verbosity_level": "Высокая" if total_words > 50 else "Лаконичная"
+        }
+    }

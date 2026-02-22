@@ -46,6 +46,21 @@ with tab1:
                         # Преобразуем JSON в красивую таблицу
                         table_data = []
                         for r in results:
+                            with st.expander(f"📋 Детали тикета {r['ticket_id'][:8]}..."):
+                                portrait = r.get("psychological_portrait", {})
+                                
+                                st.subheader("🧠 Психологический портрет клиента")
+                                col_p1, col_p2 = st.columns(2)
+                                
+                                with col_p1:
+                                    st.info(f"**Тип личности:** {portrait.get('profile_type')}")
+                                    st.write(f"**Рекомендация:** {portrait.get('communication_recommendation')}")
+                                
+                                with col_p2:
+                                    metrics = portrait.get("metrics", {})
+                                    st.write(f"📈 Повторов слов: {metrics.get('word_repetition_count')}")
+                                    st.write(f"❗ Эмоциональный фон: {'Высокий' if metrics.get('emotional_punctuation', 0) > 2 else 'Спокойный'}")
+                            
                             analysis = r.get("analysis", {})
                             geo = r.get("geo") or {}
                             table_data.append({
