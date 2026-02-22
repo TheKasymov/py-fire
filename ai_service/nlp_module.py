@@ -2086,6 +2086,18 @@ async def analyze_text(
         if "positive_guardrail" not in method:
             method = f"{method}_positive_guardrail"
 
+    # Бизнес-правило: консультации с нейтральной/позитивной тональностью всегда низкоприоритетные.
+    if result.get("appeal_type") == "Консультация" and result.get("sentiment") in {
+        "Нейтральный",
+        "Позитивный",
+    }:
+        result["priority"] = max(
+            1,
+            min(4, _normalize_priority(result.get("priority"), 1)),
+        )
+        if "consultation_low_priority_guardrail" not in method:
+            method = f"{method}_consultation_low_priority_guardrail"
+
     if not result.get("summary"):
         result["summary"] = _generate_summary(
             normalized_text,
