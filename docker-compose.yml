@@ -13,8 +13,12 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fire_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  # Добавляем сервис с Ollama
   ollama:
     image: ollama/ollama:latest
     container_name: fire_ollama
@@ -35,11 +39,30 @@ services:
       - PYTHONPATH=/app
       - OLLAMA_BASE_URL=http://ollama:11434
       - OLLAMA_MODEL=llama3.2:1b
+      - GEMINI_API_KEY=${GEMINI_API_KEY} # Рекомендую передавать через .env файл
     depends_on:
-      - db
-      - ollama
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    volumes:
+      - .:/app
+      - ./uploads:/app/uploads
+
+  frontend:
+    build: .
+    container_name: fire_frontend
+    restart: always
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONPATH=/app
+      - API_URL=http://api:8000 # Добавил переменную для связи фронта с бэком
+    depends_on:
+      - api
     volumes:
       - .:/app 
+    command: streamlit run frontend/Streamlit_UI.py --server.port=8501 --server.address=0.0.0.0
 
 volumes:
   postgres_data:
