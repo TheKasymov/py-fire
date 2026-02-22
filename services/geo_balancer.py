@@ -1,77 +1,40 @@
-import csv
-import io
-from typing import List, Dict, Any
+import logging
+from typing import Optional, Dict, Any
 
-class CSVParser:
-    @staticmethod
-    def _read_csv(file_obj) -> List[Dict[str, Any]]:
-        """Вспомогательный метод для чтения CSV из байтового потока"""
-        # Считываем байты и декодируем
-        content = file_obj.read()
-        if isinstance(content, bytes):
-            # Пробуем разные кодировки, так как Excel часто сохраняет в cp1251
-            try:
-                text = content.decode('utf-8')
-            except UnicodeDecodeError:
-                text = content.decode('cp1251')
-        else:
-            text = content
+logger = logging.getLogger(__name__)
 
-        # Создаем объект StringIO для библиотеки csv
-        file_like = io.StringIO(text)
-        
-        # Читаем с заголовками
-        reader = csv.DictReader(file_like)
-        
-        # Очищаем ключи и значения от пробелов
-        results = []
-        for row in reader:
-            clean_row = {k.strip(): v.strip() for k, v in row.items() if k}
-            results.append(clean_row)
+class GeoFallbackBalancer:
+    def __init__(self):
+        # Локальная база городов из твоего business_units.csv
+        self.local_cache = {
+            "актау": {"lat": 43.6481, "lon": 51.1706, "address": "г. Актау", "city": "Актау"},
+            "актобе": {"lat": 50.2839, "lon": 57.1670, "address": "г. Актобе", "city": "Актобе"},
+            "алматы": {"lat": 43.2220, "lon": 76.8512, "address": "г. Алматы", "city": "Алматы"},
+            "астана": {"lat": 51.1801, "lon": 71.4460, "address": "г. Астана", "city": "Астана"},
+            "атырау": {"lat": 47.0945, "lon": 51.9238, "address": "г. Атырау", "city": "Атырау"},
+            "караганда": {"lat": 49.8019, "lon": 73.1021, "address": "г. Караганда", "city": "Караганда"},
+            "кокшетау": {"lat": 53.2846, "lon": 69.3775, "address": "г. Кокшетау", "city": "Кокшетау"},
+            "костанай": {"lat": 53.2198, "lon": 63.6283, "address": "г. Костанай", "city": "Костанай"},
+            "кызылорда": {"lat": 44.8486, "lon": 65.4823, "address": "г. Кызылорда", "city": "Кызылорда"},
+            "павлодар": {"lat": 52.3013, "lon": 76.9566, "address": "г. Павлодар", "city": "Павлодар"},
+            "петропавловск": {"lat": 54.8732, "lon": 69.1430, "address": "г. Петропавловск", "city": "Петропавловск"},
+            "тараз": {"lat": 42.9000, "lon": 71.3667, "address": "г. Тараз", "city": "Тараз"},
+            "уральск": {"lat": 51.2333, "lon": 51.3667, "address": "г. Уральск", "city": "Уральск"},
+            "усть-каменогорск": {"lat": 49.9483, "lon": 82.6279, "address": "г. Усть-Каменогорск", "city": "Усть-Каменогорск"},
+            "шымкент": {"lat": 42.3417, "lon": 69.5901, "address": "г. Шымкент", "city": "Шымкент"}
+        }
+
+    async def geocode(self, address_query: str) -> Optional[Dict[str, Any]]:
+        if not address_query:
+            return None
             
-        return results
+        address_lower = address_query.lower()
 
-    @staticmethod
-    def parse_business_units(file) -> List[Dict[str, Any]]:
-        raw_data = CSVParser._read_csv(file)
-        # Приводим к единому формату, который ждет pipeline
-        units = []
-        for row in raw_data:
-            units.append({
-                "name": row.get("Офис"),
-                "address": row.get("Адрес"),
-                "city": row.get("Офис")  # В business_units.csv название офиса совпадает с городом
-            })
-        return units
+        for city, data in self.local_cache.items():
+            if city in address_lower:
+                return data
 
-    @staticmethod
-    def parse_managers(file) -> List[Dict[str, Any]]:
-        raw_data = CSVParser._read_csv(file)
-        managers = []
-        for row in raw_data:
-            # Обрабатываем навыки (строка "VIP, ENG" -> список)
-            skills_str = row.get("Навыки", "")
-            skills = [s.strip() for s in skills_str.split(",")] if skills_str else []
-            
-            managers.append({
-                "name": row.get("ФИО"),
-                "role": row.get("Должность"),
-                "office": row.get("Офис"),
-                "skills": skills,
-                "load": int(row.get("Количество обращений в работе", 0))
-            })
-        return managers
+        return None
 
-    @staticmethod
-    def parse_tickets(file) -> List[Dict[str, Any]]:
-        raw_data = CSVParser._read_csv(file)
-        tickets = []
-        for row in raw_data:
-            tickets.append({
-                "id": row.get("GUID клиента"),
-                "text": row.get("Описание"),
-                "segment": row.get("Сегмент клиента"), # Mass, VIP и т.д.
-                "address": f"{row.get('Страна', '')}, {row.get('Область', '')}, {row.get('Населённый пункт', '')}, {row.get('Улица', '')}, {row.get('Дом', '')}".strip(", "),
-                "manager_id": None # Будет заполнено алгоритмом
-            })
-        return tickets
+# ИМЕННО ЭТУ ПЕРЕМЕННУЮ ИЩЕТ ПАЙПЛАЙН:
+geo_balancer = GeoFallbackBalancer()

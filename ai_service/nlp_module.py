@@ -18,6 +18,9 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, Optional, cast
+import osmnx as ox  # <--- ДОБАВЬ ЭТУ СТРОКУ
+
+
 
 import httpx
 from geopy.exc import GeocoderServiceError, GeocoderTimedOut
