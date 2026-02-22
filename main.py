@@ -18,7 +18,7 @@ from typing import Optional
 from datetime import datetime
 from typing import List, Dict
 from db.models import RoutingHistory
-from schemas.models import RoutedTicket, AIAnalysisResult
+from schemas.models import TicketCreate, RoutedTicket, AIAnalysisResult
 
 
 class ModelInfo(BaseModel):
@@ -245,3 +245,69 @@ async def list_routing_history(skip: int = 0, limit: int = 10, db: Session = Dep
         ))
         
     return result_list
+
+@app.post("/api/v1/tickets", response_model=RoutedTicket)
+async def create_and_route_ticket(ticket: TicketCreate, db: Session = Depends(get_db)):
+    """
+    Принимает новый тикет (от Telegram бота или сайта), 
+    анализирует через ИИ, назначает менеджера и сохраняет в БД.
+    """
+    
+    # ---------------------------------------------------------
+    # ШАГ 1: АНАЛИЗ ИИ (AI Module)
+    # ---------------------------------------------------------
+    # Здесь вызовите вашу реальную нейросеть (Gemini, Llama или вашу appeals_nb_model)
+    # Для примера я напишу простую логику-заглушку:
+    
+    is_complaint = "жалоба" in ticket.description.lower()
+    
+    ai_data = AIAnalysisResult(
+        ticket_type="Жалоба" if is_complaint else "Консультация",
+        sentiment="Негативная" if is_complaint else "Нейтральная",
+        complexity_score=50 if is_complaint else 10,
+        is_critical=True if (ticket.segment == "VIP" and is_complaint) else False
+    )
+
+    # ---------------------------------------------------------
+    # ШАГ 2: МАРШРУТИЗАЦИЯ (Geo Balancer)
+    # ---------------------------------------------------------
+    # Здесь логика подбора менеджера (проверка скиллов, города, загрузки)
+    
+    assigned_manager = "Иванов Иван (VIP-отдел)" if ai_data.is_critical else "Петров Петр"
+    assigned_office = "Офис Астана" if ticket.city.lower() == "астана" else "Офис Алматы"
+    routing_reason = f"Назначен по сегменту {ticket.segment} и сложности {ai_data.complexity_score}"
+
+    # ---------------------------------------------------------
+    # ШАГ 3: СОХРАНЕНИЕ В БАЗУ ДАННЫХ (PostgreSQL)
+    # ---------------------------------------------------------
+    new_record = RoutingHistory(
+        ticket_guid=ticket.guid,
+        city=ticket.city,
+        segment=ticket.segment,
+        
+        # Данные от ИИ
+        ai_ticket_type=ai_data.ticket_type,
+        ai_sentiment=ai_data.sentiment,
+        ai_complexity_score=ai_data.complexity_score,
+        
+        # Данные маршрутизации
+        manager_fio=assigned_manager,
+        assigned_office=assigned_office,
+        routing_reason=routing_reason
+    )
+    
+    db.add(new_record)
+    db.commit()
+    db.refresh(new_record) # Получаем обновленные данные (с ID и датой)
+
+    # ---------------------------------------------------------
+    # ШАГ 4: ОТВЕТ ДЛЯ TELEGRAM БОТА
+    # ---------------------------------------------------------
+    # Возвращаем данные строго по схеме RoutedTicket
+    return RoutedTicket(
+        ticket_guid=new_record.ticket_guid,
+        manager_fio=new_record.manager_fio,
+        assigned_office=new_record.assigned_office,
+        ai_analysis=ai_data,
+        routing_reason=new_record.routing_reason
+    )

@@ -64,6 +64,19 @@ services:
       - .:/app 
     command: streamlit run frontend/Streamlit_UI.py --server.port=8501 --server.address=0.0.0.0
 
+  tg_bot:
+    build: 
+      context: . # или ./bot, если выделите в отдельную папку
+    container_name: fire_tg_bot
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - API_URL=http://api:8000 # Бот обращается к API по имени контейнера
+    depends_on:
+      - api
+    command: python bot/main_bot.py # Команда запуска бота
 volumes:
   postgres_data:
   ollama_data:
