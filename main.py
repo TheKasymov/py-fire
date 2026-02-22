@@ -28,7 +28,7 @@ async def route_tickets_endpoint(
         tickets = CSVParser.parse_tickets(tickets_file.file)
         
         # 2. Балансируем
-        results = TicketPipeline.process_all(tickets, managers, offices)
+        results = await TicketPipeline.process_all(tickets, managers, offices)
         
         # 3. Сохраняем в PostgreSQL
         RoutingRepository.save_routing_results(db, results, tickets)

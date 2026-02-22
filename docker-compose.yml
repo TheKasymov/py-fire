@@ -32,6 +32,7 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/fire_db
+      - PYTHONPATH=/app
       - OLLAMA_BASE_URL=http://ollama:11434
       - OLLAMA_MODEL=llama3.2:1b
     depends_on:
