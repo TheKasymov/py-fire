@@ -7,6 +7,7 @@ from typing import List, Dict, Optional
 import uvicorn
 import PIL.Image
 import google.generativeai as genai
+import aiofiles
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse
@@ -77,30 +78,39 @@ def health_check():
 # ==========================================
 # ЭНДПОИНТЫ: МАССОВАЯ МАРШРУТИЗАЦИЯ (CSV)
 # ==========================================
-@app.post("/api/v1/route-tickets")
-async def route_tickets_endpoint(
-    tickets_file: UploadFile = File(...),
-    managers_file: UploadFile = File(...),
-    units_file: UploadFile = File(...),
-    db: Session = Depends(get_db)
-):
+@app.post("/api/v1/route-tickets/execute")
+async def execute_mass_routing(db: Session = Depends(get_db)):
     try:
-        # 1. Парсим CSV
-        offices = CSVParser.parse_business_units(units_file.file)
-        managers = CSVParser.parse_managers(managers_file.file)
-        tickets = CSVParser.parse_tickets(tickets_file.file)
+        # Проверяем наличие всех 3 файлов на диске
+        paths = {
+            "units": os.path.join(UPLOAD_DIR, "latest_units.csv"),
+            "managers": os.path.join(UPLOAD_DIR, "latest_managers.csv"),
+            "tickets": os.path.join(UPLOAD_DIR, "latest_tickets.csv")
+        }
         
-        # 2. Балансируем (с ИИ-анализом и психологическим портретом)
+        for name, path in paths.items():
+            if not os.path.exists(path):
+                raise HTTPException(status_code=400, detail=f"Не найден файл {name}. Загрузите его сначала.")
+
+        # Парсим файлы (в идеале CSVParser тоже сделать асинхронным или запускать через run_in_threadpool)
+        with open(paths["units"], 'rb') as f_units, \
+             open(paths["managers"], 'rb') as f_managers, \
+             open(paths["tickets"], 'rb') as f_tickets:
+            
+            offices = CSVParser.parse_business_units(f_units)
+            managers = CSVParser.parse_managers(f_managers)
+            tickets = CSVParser.parse_tickets(f_tickets)
+        
+        # Балансируем 
         results = await TicketPipeline.process_all(tickets, managers, offices)
         
-        # 3. Сохраняем в PostgreSQL
+        # Сохраняем в PostgreSQL
         RoutingRepository.save_routing_results(db, results, tickets)
         
-        return results
+        return {"status": "success", "routed_tickets": len(results)}
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка: {str(e)}")
-
+        raise HTTPException(status_code=500, detail=f"Ошибка маршрутизации: {str(e)}")
 
 # ==========================================
 # ЭНДПОИНТЫ: STAR TASK (AI-ASSISTANT)
@@ -226,6 +236,23 @@ async def get_routing_result(ticket_guid: str, db: Session = Depends(get_db)):
         sla_deadline=history_record.sla_deadline, # <--- ДОБАВИТЬ ЭТУ СТРОКУ
         routing_reason=history_record.routing_reason
     )
+
+# ==========================================
+# ЭНДПОИНТЫ: ЗАГРУЗКА CSV ФАЙЛОВ
+# ==========================================
+@app.post("/api/v1/upload/{doc_type}")
+async def upload_csv(doc_type: str, file: UploadFile = File(...)):
+    if doc_type not in ["managers", "tickets", "units"]:
+        raise HTTPException(status_code=400, detail="Неверный тип документа")
+    
+    # Сохраняем загруженный файл асинхронно, чтобы не блокировать сервер
+    file_path = os.path.join(UPLOAD_DIR, f"latest_{doc_type}.csv")
+    
+    async with aiofiles.open(file_path, 'wb') as out_file:
+        content = await file.read()
+        await out_file.write(content)
+        
+    return {"status": "success", "processed_count": len(content.splitlines()) - 1}
 
 @app.get("/api/v1/routing-history", response_model=List[RoutedTicket])
 async def list_routing_history(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):

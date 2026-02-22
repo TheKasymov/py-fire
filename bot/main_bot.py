@@ -90,23 +90,20 @@ async def document_handler(message: Message):
         reply_markup=csv_type_kb
     )
 
-@dp.callback_query(F.data.startswith("csv_"))
-async def process_csv_callback(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    action = callback.data # 'csv_managers', 'csv_tickets' или 'csv_cancel'
-    
-    # Убираем часики на кнопке в самом клиенте Телеграм
-    await callback.answer()
-
-    if action == "csv_cancel":
-        pending_files.pop(user_id, None)
-        await callback.message.edit_text("❌ Загрузка файла отменена.")
-        return
-
-    file_id = pending_files.get(user_id)
-    if not file_id:
-        await callback.message.edit_text("❌ Ошибка: файл устарел или потерян. Загрузите его заново.")
-        return
+@dp.callback_query(F.data == "run_routing")
+async def run_routing_callback(callback: CallbackQuery):
+    await callback.message.edit_text("⏳ Запускаю ИИ-маршрутизацию всех файлов...")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{API_URL}/api/v1/route-tickets/execute") as response:
+                if response.status == 200:
+                    res = await response.json()
+                    await callback.message.edit_text(f"✅ Успешно распределено тикетов: {res.get('routed_tickets')}")
+                else:
+                    error_data = await response.json()
+                    await callback.message.edit_text(f"❌ Ошибка: {error_data.get('detail', 'Неизвестная ошибка')}")
+    except Exception as e:
+         await callback.message.edit_text("❌ Нет связи с сервером.")
 
     # 1. Скачиваем файл из Telegram
     await callback.message.edit_text("⏳ Скачиваю файл...")
@@ -117,22 +114,33 @@ async def process_csv_callback(callback: CallbackQuery):
     endpoint = "/api/v1/upload/managers" if action == "csv_managers" else "/api/v1/upload/tickets"
     file_label = "Менеджеры" if action == "csv_managers" else "Тикеты"
 
-    # 2. Отправляем в FastAPI
+# 2. Отправляем в FastAPI
     try:
         await callback.message.edit_text(f"🚀 Отправляю базу «{file_label}» на сервер для парсинга...")
         
         async with aiohttp.ClientSession() as session:
             data = aiohttp.FormData()
-            data.add_field('file', downloaded_file.read(), filename=f'{user_id}_data.csv', content_type='text/csv')
+            # Важно: используем getbuffer() для правильной передачи байтов
+            data.add_field('file', downloaded_file.getvalue(), 
+                           filename=f'{user_id}_data.csv', 
+                           content_type='text/csv')
             
             async with session.post(f"{API_URL}{endpoint}", data=data) as response:
                 if response.status == 200:
                     res = await response.json()
-                    await callback.message.edit_text(f"✅ Файл успешно обработан!\nЗагружено записей: {res.get('processed_count', 'Н/Д')}")
+                    
+                    # Добавляем кнопку для запуска маршрутизации, когда файл загружен
+                    kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⚙️ Запустить распределение", callback_data="run_routing")]
+                    ])
+                    await callback.message.edit_text(
+                        f"✅ Файл успешно сохранен на сервере!\nСтрок обработано: {res.get('processed_count', 'Н/Д')}",
+                        reply_markup=kb
+                    )
                 else:
                     await callback.message.edit_text(f"❌ Сервер вернул ошибку: {response.status}")
     except Exception as e:
-        await callback.message.edit_text("❌ Ошибка соединения с сервером API.")
+        await callback.message.edit_text(f"❌ Ошибка соединения с сервером API: {e}")
     finally:
         # Очищаем память
         pending_files.pop(user_id, None)

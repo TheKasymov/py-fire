@@ -1,125 +1,106 @@
 import streamlit as st
 import requests
+import os
 import pandas as pd
 
-# Настройка страницы
-st.set_page_config(page_title="F.I.R.E. Dashboard", page_icon="🔥", layout="wide")
+# Получаем URL API из окружения (в Docker это будет http://api:8000)
+API_URL = os.getenv("API_URL", "http://localhost:8000")
 
-API_BASE_URL = "http://api:8000/api/v1"
+st.set_page_config(page_title="AI Маршрутизатор", page_icon="🔥", layout="wide")
 
-st.title("🔥 F.I.R.E. — Freedom Intelligent Routing Engine")
-st.markdown("Система интеллектуального распределения клиентских обращений")
+st.title("🔥 F.I.R.E: Умная маршрутизация обращений")
+st.markdown("Загрузите файлы с данными, чтобы ИИ распределил тикеты по свободным менеджерам.")
 
-# Вкладки для навигации
-tab1, tab2 = st.tabs(["📄 Маршрутизация (Загрузка CSV)", "📊 ИИ-Ассистент (Star Task)"])
+# --- БЛОК 1: ЗАГРУЗКА ФАЙЛОВ ---
+col1, col2, col3 = st.columns(3)
 
-# --- ВКЛАДКА 1: МАРШРУТИЗАЦИЯ ---
-with tab1:
-    st.header("1. Загрузка данных")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        tickets_file = st.file_uploader("1. Обращения (tickets.csv)", type=["csv"])
-    with col2:
-        managers_file = st.file_uploader("2. Менеджеры (managers.csv)", type=["csv"])
-    with col3:
-        units_file = st.file_uploader("3. Офисы (business_units.csv)", type=["csv"])
+with col1:
+    st.subheader("1. База тикетов")
+    tickets_file = st.file_uploader("Загрузите билеты (.csv)", type=["csv"], key="tickets")
 
-    if st.button("🚀 Запустить распределение", type="primary"):
-        if tickets_file and managers_file and units_file:
-            with st.spinner("Анализируем обращения через ИИ и распределяем..."):
-                # Подготовка файлов для отправки в API
-                files = {
-                    "tickets_file": (tickets_file.name, tickets_file.getvalue(), "text/csv"),
-                    "managers_file": (managers_file.name, managers_file.getvalue(), "text/csv"),
-                    "units_file": (units_file.name, units_file.getvalue(), "text/csv"),
-                }
+with col2:
+    st.subheader("2. Менеджеры")
+    managers_file = st.file_uploader("Загрузите менеджеров (.csv)", type=["csv"], key="managers")
+
+with col3:
+    st.subheader("3. Офисы")
+    units_file = st.file_uploader("Загрузите филиалы (.csv)", type=["csv"], key="units")
+
+# --- БЛОК 2: ОТПРАВКА НА СЕРВЕР ---
+def upload_file_to_api(file, doc_type):
+    if file is not None:
+        files = {'file': (file.name, file.getvalue(), 'text/csv')}
+        try:
+            response = requests.post(f"{API_URL}/api/v1/upload/{doc_type}", files=files)
+            if response.status_code == 200:
+                return True, response.json().get('processed_count', 0)
+            return False, f"Ошибка API: {response.status_code}"
+        except Exception as e:
+            return False, f"Нет связи с API: {str(e)}"
+    return False, "Файл не выбран"
+
+if st.button("📥 1. Загрузить файлы на сервер", use_container_width=True):
+    if not all([tickets_file, managers_file, units_file]):
+        st.error("Пожалуйста, выберите все три файла перед загрузкой!")
+    else:
+        with st.spinner("Отправка данных..."):
+            # Загружаем по очереди
+            s1, msg1 = upload_file_to_api(tickets_file, "tickets")
+            s2, msg2 = upload_file_to_api(managers_file, "managers")
+            s3, msg3 = upload_file_to_api(units_file, "units")
+            
+            if s1 and s2 and s3:
+                st.success(f"✅ Все файлы загружены! (Тикетов: {msg1}, Менеджеров: {msg2})")
+                st.session_state['files_uploaded'] = True
+            else:
+                st.error(f"❌ Ошибка загрузки. \nТикеты: {msg1}\nМенеджеры: {msg2}\nОфисы: {msg3}")
+
+# --- БЛОК 3: ЗАПУСК ИИ-МАРШРУТИЗАЦИИ ---
+st.divider()
+
+if st.session_state.get('files_uploaded', False):
+    if st.button("🚀 2. Запустить ИИ-распределение", type="primary", use_container_width=True):
+        with st.spinner("🤖 ИИ анализирует тикеты и подбирает менеджеров... Это может занять время."):
+            try:
+                res = requests.post(f"{API_URL}/api/v1/route-tickets/execute")
+                if res.status_code == 200:
+                    data = res.json()
+                    st.success(f"🎉 Успех! Распределено тикетов: {data.get('routed_tickets')}")
+                    
+                    # Предлагаем посмотреть историю
+                    st.info("Перейдите в Telegram-бот и нажмите /history, чтобы увидеть результаты, или посмотрите ниже.")
+                else:
+                    st.error(f"❌ Ошибка сервера: {res.text}")
+            except Exception as e:
+                st.error(f"❌ Ошибка соединения: {str(e)}")
+
+# --- БЛОК 4: ИСТОРИЯ (GET API) ---
+st.divider()
+if st.button("🔄 Обновить последние 10 записей"):
+    try:
+        res = requests.get(f"{API_URL}/api/v1/routing-history?limit=10")
+        if res.status_code == 200:
+            history = res.json()
+            if history:
+                # Превращаем JSON в красивую таблицу Pandas
+                df = pd.json_normalize(history)
                 
-                try:
-                    # Отправляем POST запрос на твой FastAPI
-                    response = requests.post(f"{API_BASE_URL}/route-tickets", files=files)
-                    
-                    if response.status_code == 200:
-                        results = response.json()
-                        st.success(f"Успешно обработано {len(results)} обращений!")
-                        
-                        # Преобразуем JSON в красивую таблицу для АУДИТА
-                        table_data = []
-                        for r in results:
-                            # Теперь ИИ-аналитика лежит в объекте ai_analysis (по нашей новой схеме)
-                            ai_analysis = r.get("ai_analysis", {})
-                            
-                            table_data.append({
-                                "ID": r.get("ticket_guid", "N/A")[:8],
-                                "Тип проблемы": ai_analysis.get("ticket_type", "-"),
-                                "Тональность": ai_analysis.get("sentiment", "-"),
-                                "Сложность (Баллы)": ai_analysis.get("complexity_score", 0),
-                                "SLA (Время ответа)": r.get("sla_deadline", "-"),
-                                "Назначен": r.get("manager_fio", "-"),
-                                "Офис": r.get("assigned_office", "-"),
-                                "Причина маршрутизации (Аудит)": r.get("routing_reason", "-")
-                            })
-                            
-                        df = pd.DataFrame(table_data)
-                        
-                        # Выводим таблицу
-                        st.dataframe(df, use_container_width=True)
-                        
-                        # Добавим визуальный индикатор для критичных тикетов (Опционально)
-                        critical_tickets = [t for t in results if t.get("ai_analysis", {}).get("is_critical")]
-                        if critical_tickets:
-                            st.warning(f"⚠️ Внимание! Обнаружено {len(critical_tickets)} критичных обращений (Эскалация).")
-                    else:
-                        st.error(f"Ошибка API: {response.text}")
-                except Exception as e:
-                    st.error(f"Не удалось подключиться к API. Убедитесь, что бэкенд запущен на порту 8000. Ошибка: {e}")
-        else:
-            st.warning("Пожалуйста, загрузите все три CSV файла.")
-
-
-# --- ВКЛАДКА 2: STAR TASK (ИИ-АССИСТЕНТ) ---
-with tab2:
-    st.header("✨ ИИ-Ассистент для аналитики (Star Task)")
-    st.markdown("Спросите ИИ о данных, например: *«Покажи распределение по приоритетам»* или *«Динамика по городам»*")
-    
-    query = st.text_input("Ваш запрос:")
-    
-    if st.button("Сгенерировать график", type="secondary"):
-        if query:
-            with st.spinner("ИИ анализирует базу и строит график..."):
-                try:
-                    # Обращаемся к новому эндпоинту, который ты добавил в main.py
-                    res = requests.post(f"{API_BASE_URL}/ai-assistant/chart", json={"query": query})
-                    
-                    if res.status_code == 200:
-                        chart_data = res.json()
-                        
-                        if "error" in chart_data:
-                            st.warning(chart_data["error"])
-                        else:
-                            st.subheader(chart_data.get("title", "График"))
-                            st.write(chart_data.get("description", ""))
-                            
-                            labels = chart_data.get("labels", [])
-                            values = chart_data.get("values", [])
-                            c_type = chart_data.get("chart_type", "bar")
-                            
-                            if labels and values:
-                                # Подготавливаем DataFrame для графиков
-                                df_chart = pd.DataFrame({"Показатель": labels, "Количество": values}).set_index("Показатель")
-                                
-                                # Отрисовка в зависимости от типа, который вернула Ollama
-                                if c_type in ["bar", "pie", "doughnut"]:
-                                    st.bar_chart(df_chart)
-                                elif c_type == "line":
-                                    st.line_chart(df_chart)
-                                else:
-                                    st.bar_chart(df_chart)
-                            else:
-                                st.info("Нет данных для отрисовки графика.")
-                    else:
-                        st.error(f"Ошибка генерации: {res.text}")
-                except Exception as e:
-                    st.error(f"Не удалось подключиться к API: {e}")
-        else:
-            st.warning("Введите запрос!")
+                # Переименовываем колонки для красоты
+                df = df.rename(columns={
+                    "ticket_guid": "ID Тикета",
+                    "manager_fio": "Менеджер",
+                    "assigned_office": "Офис",
+                    "routing_reason": "Причина маршрутизации",
+                    "sla_deadline": "SLA",
+                    "ai_analysis.ticket_type": "Категория",
+                    "ai_analysis.complexity_score": "Сложность",
+                    "ai_analysis.is_critical": "Критично?"
+                })
+                
+                # Оставляем только нужные колонки
+                display_df = df[["ID Тикета", "Менеджер", "Офис", "Категория", "Сложность", "SLA", "Критично?"]]
+                st.dataframe(display_df, use_container_width=True)
+            else:
+                st.info("История пуста. Запустите распределение.")
+    except Exception as e:
+        st.error(f"Не удалось загрузить историю: {e}")

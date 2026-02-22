@@ -123,25 +123,27 @@ class TicketPipeline:
         return sla_time, is_critical, complexity_score, risk_level
 
     @staticmethod
-    def _apply_anti_burnout_routing(suitable_managers: List[Dict], complexity_score: int):
+    def _apply_anti_burnout_routing(suitable_managers: List[Dict], complexity_score: int) -> Optional[Dict]:
         if not suitable_managers:
             return None
 
         valid_managers = []
         for m in suitable_managers:
-            # АНТИПЕРЕГОРАНИЕ: Если у менеджера накопилось 20+ баллов, он не получает сложные запросы (>= 10)
-            if m.get('current_score', 0) >= 20 and complexity_score >= 10:
+            # Используем безопасный .get()
+            current_score = m.get('current_score', 0)
+            
+            # АНТИПЕРЕГОРАНИЕ: Если у менеджера накопилось 20+ баллов, он не получает сложные запросы
+            if current_score >= 20 and complexity_score >= 10:
                 continue
             valid_managers.append(m)
 
-        # Если все перегружены, берем всех (запрос не может зависнуть навсегда)
-        if not valid_managers:
-            valid_managers = suitable_managers
+        # Если все перегружены, берем всех, чтобы запрос не завис
+        managers_to_sort = valid_managers if valid_managers else suitable_managers
 
-        # Сортируем по сумме баллов сложности, а не по количеству тикетов! Отдаем наименее загруженному.
-        valid_managers.sort(key=lambda x: x.get('current_score', 0))
+        # Сортируем по сумме баллов (чем меньше баллов, тем приоритетнее)
+        managers_to_sort.sort(key=lambda x: x.get('current_score', 0))
         
-        return valid_managers[0]
+        return managers_to_sort[0]
 
     @staticmethod
     def _filter_managers(managers, city, ai_data, segment):
