@@ -1,6 +1,5 @@
 import math
 from typing import List, Dict, Any
-# Важно: имя файла должно быть services/geo_balancer.py
 from services.geo_balancer import geo_balancer 
 from ai_service.nlp_module import analyze_text
 
@@ -8,22 +7,23 @@ class TicketPipeline:
     @staticmethod
     async def process_all(tickets: List[Dict], managers: List[Dict], offices: List[Dict]) -> List[Dict]:
         results = []
-        
-        # Индекс для Round Robin (храним в памяти на время обработки пачки)
         rr_index = {}
+        
+        # Переменная-счетчик для распределения неизвестных адресов 50/50
+        fallback_city_toggle = 0 
 
         for ticket in tickets:
-            # 1. AI Анализ через локальную Ollama или Naive Bayes
             ai_analysis = await analyze_text(ticket['text'])
-            
-            # 2. Гео-балансировка (используем ваш класс GeoFallbackBalancer)
-            # Передаем адрес из распарсенного тикета
             geo_data = await geo_balancer.geocode(ticket['address'])
             
-            # Если адрес не найден, берем дефолтный город или Астану
-            current_city = geo_data['city'] if geo_data else "Астана"
+            # --- ИСПРАВЛЕНИЕ: Гео-фильтр 50/50 ---
+            if geo_data:
+                current_city = geo_data['city']
+            else:
+                # Если адрес неизвестен/зарубежный, чередуем Астану и Алматы
+                current_city = "Астана" if fallback_city_toggle % 2 == 0 else "Алматы"
+                fallback_city_toggle += 1
             
-            # 3. Фильтрация менеджеров по правилам ТЗ
             suitable_managers = TicketPipeline._filter_managers(
                 managers, 
                 current_city, 
@@ -31,7 +31,6 @@ class TicketPipeline:
                 ticket.get('segment')
             )
             
-            # 4. Распределение (Round Robin)
             assigned_manager = TicketPipeline._apply_round_robin(
                 suitable_managers, 
                 current_city, 
@@ -50,13 +49,19 @@ class TicketPipeline:
     @staticmethod
     def _filter_managers(managers, city, ai_data, segment):
         suitable = []
+        appeal_type = ai_data.get('appeal_type', '')
+        
         for m in managers:
             # 1. Гео-фильтр (Офис в том же городе)
             if m['office'].lower() != city.lower():
                 continue
             
-            # 2. VIP фильтр (Только для менеджеров с навыком VIP)
-            if segment == 'VIP' and 'VIP' not in m['skills']:
+            # --- ИСПРАВЛЕНИЕ: Фильтр VIP/Priority ---
+            if segment in ['VIP', 'Priority'] and 'VIP' not in m['skills']:
+                continue
+                
+            # --- ИСПРАВЛЕНИЕ: Фильтр "Смена данных" -> Глав спец ---
+            if appeal_type == 'Смена данных' and 'глав' not in m['role'].lower():
                 continue
                 
             # 3. Языковой фильтр
